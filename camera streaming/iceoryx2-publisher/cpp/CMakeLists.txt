@@ -1,47 +1,64 @@
-CMAKE_MINIMUM_REQUIRED(VERSION 3.5)
-PROJECT(ZED_IceoryX2_Camera_Publisher)
+cmake_minimum_required(VERSION 3.22)
+project(ZED_IceoryX2_Camera_Publisher LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-SET(CMAKE_BUILD_TYPE "Release")
+set(CMAKE_CXX_EXTENSIONS OFF)
 
-option(LINK_SHARED_ZED "Link with the ZED SDK shared executable" ON)
+# Prefer single-config generators; harmless on multi-config ones
+if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
 
-if (NOT LINK_SHARED_ZED AND MSVC)
-    message(FATAL_ERROR "LINK_SHARED_ZED OFF : ZED SDK static libraries not available on Windows")
+option(LINK_SHARED_ZED "Link with the ZED SDK shared libraries" ON)
+
+if(NOT LINK_SHARED_ZED AND MSVC)
+    message(FATAL_ERROR "LINK_SHARED_ZED=OFF: ZED SDK static libraries are not available on Windows")
 endif()
 
 find_package(ZED REQUIRED)
 find_package(CUDA ${ZED_CUDA_VERSION} REQUIRED)
-find_package(iceoryx_core REQUIRED)
-find_package(iceoryx_hoofs REQUIRED)
-find_package(iceoryx_binding_c REQUIRED)
 
-include_directories(${CUDA_INCLUDE_DIRS})
-include_directories(${ZED_INCLUDE_DIRS})
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
-include_directories(${iceoryx_core_INCLUDE_DIRS})
+# iceoryx2 C++ package
+find_package(iceoryx2-cxx REQUIRED)
 
-link_directories(${ZED_LIBRARY_DIR})
-link_directories(${CUDA_LIBRARY_DIRS})
+add_executable(${PROJECT_NAME}
+    src/main.cpp
+)
 
-add_definitions(-g)
-ADD_EXECUTABLE(${PROJECT_NAME} src/main.cpp)
+target_include_directories(${PROJECT_NAME}
+    PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${ZED_INCLUDE_DIRS}
+        ${CUDA_INCLUDE_DIRS}
+)
 
-if (LINK_SHARED_ZED)
-    SET(ZED_LIBS ${ZED_LIBRARIES} ${CUDA_CUDA_LIBRARY} ${CUDA_CUDART_LIBRARY})
+if(LINK_SHARED_ZED)
+    set(ZED_LIBS
+        ${ZED_LIBRARIES}
+        ${CUDA_CUDA_LIBRARY}
+        ${CUDA_CUDART_LIBRARY}
+    )
 else()
-    SET(ZED_LIBS ${ZED_STATIC_LIBRARIES} ${CUDA_CUDA_LIBRARY} ${CUDA_LIBRARY})
+    set(ZED_LIBS
+        ${ZED_STATIC_LIBRARIES}
+        ${CUDA_CUDA_LIBRARY}
+        ${CUDA_LIBRARY}
+    )
 endif()
 
-TARGET_LINK_LIBRARIES(${PROJECT_NAME}
-    ${ZED_LIBS}
-    iceoryx_core::iceoryx_core
-    iceoryx_hoofs::iceoryx_hoofs
-    iceoryx_binding_c::iceoryx_binding_c
+target_link_libraries(${PROJECT_NAME}
+    PRIVATE
+        ${ZED_LIBS}
+        iceoryx2-cxx::static-lib-cxx
+)
+
+target_compile_options(${PROJECT_NAME}
+    PRIVATE
+        $<$<CONFIG:Debug>:-g>
 )
 
 if(INSTALL_SAMPLES)
-    LIST(APPEND SAMPLE_LIST ${PROJECT_NAME})
-    SET(SAMPLE_LIST "${SAMPLE_LIST}" PARENT_SCOPE)
+    list(APPEND SAMPLE_LIST ${PROJECT_NAME})
+    set(SAMPLE_LIST "${SAMPLE_LIST}" PARENT_SCOPE)
 endif()
