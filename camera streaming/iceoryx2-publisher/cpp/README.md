@@ -1,108 +1,225 @@
 # ZED IceoryX2 Camera Publisher
 
-This sample demonstrates how to stream ZED camera frames to shared memory using the **iceoryx2** framework.
+This sample streams ZED camera images over **iceoryx2** shared memory using the current C++ API. It is designed for current `iceoryx2` releases and current ZED SDK usage patterns.
 
 ## Overview
 
-This service:
-- Detects all connected ZED cameras (including multiple ZED Mini units)
-- Creates separate publishers for left and right images for each camera
-- Publishes frames to namespaced IPC topics via iceoryx2 shared memory
-- Supports multiple concurrent cameras with independent frame capture threads
+The publisher:
+- Detects all connected ZED cameras
+- Can list available ZED cameras with detailed device metadata
+- Can restrict streaming to a selected subset of cameras by serial or index
+- Opens one left and one right image publisher per camera
+- Uses the `iceoryx2` C++ API with RAII objects instead of raw C handles
+- Publishes image bytes as a dynamic `Slice<uint8_t>` payload
+- Publishes frame metadata in a typed user header
+- Exposes runtime camera controls through an `iceoryx2` request/response service
+- Exposes stereo calibration snapshots through an `iceoryx2` blackboard service
+- Uses `Node::wait(...)` for pacing and shutdown instead of a manual busy loop
 
-## Topic Naming
+## Service Naming
 
-Topics are namespaced by camera index for multi-camera setups:
-- `/cams/zed1/left` - Left image from first ZED camera
-- `/cams/zed1/right` - Right image from first ZED camera
-- `/cams/zed2/left` - Left image from second ZED camera
-- `/cams/zed2/right` - Right image from second ZED camera
-- And so on...
+Services are namespaced by camera index:
+- `cams/zed1/left`
+- `cams/zed1/right`
+- `cams/zed2/left`
+- `cams/zed2/right`
 
-## Image Data Format
+You can change the `cams` prefix with `--service-prefix`.
 
-Each published message contains:
+Additional IPC services:
+- Control service: `cams/control`
+- Calibration blackboard: `cams/calibration`
+
+Why these protocols:
+- `request/response` is used for camera settings because callers need explicit success/error feedback and read-after-write responses.
+- `blackboard` is used for calibration because it represents the latest state per stereo pair and should be readable at any time without replaying a stream.
+
+## Wire Format
+
+Each sample contains:
+- Payload: raw image bytes from a ZED `sl::Mat`
+- User header: fixed-size metadata
+
 ```cpp
-struct ImageData {
-    uint32_t width;              // Image width
-    uint32_t height;             // Image height
-    uint32_t timestamp;          // Frame timestamp
-    uint32_t frame_id;           // Frame counter
-    uint32_t serial_number;      // Camera serial number
-    uint8_t image_data[];        // RGBA image data (up to 4K resolution)
+struct FrameHeader {
+    uint64_t timestamp_ns;
+    uint64_t frame_id;
+    uint32_t serial_number;
+    uint32_t camera_index;
+    uint32_t camera_model;
+    uint32_t view;
+    uint32_t width;
+    uint32_t height;
+    uint32_t step_bytes;
+    uint32_t image_bytes;
+    uint32_t channels;
+    uint32_t bytes_per_pixel;
+    uint32_t mat_type;
+    uint32_t reserved;
 };
 ```
 
-## Building
+This avoids a large fixed 4K buffer in every shared-memory sample and scales with the actual frame size being sent.
+
+## Build
 
 ### Prerequisites
-- ZED SDK 4.0+
-- iceoryx2 library
+- ZED SDK 5.2.2 or compatible
+- iceoryx2 with C++ bindings installed
 - CUDA SDK
-- CMake 3.5+
+- CMake 3.22+
 
 ### Build Instructions
 
 ```bash
-cd /path/to/zed-sdk
-mkdir build && cd build
-cmake ..
-make
-```
-
-Or to build just this sample:
-```bash
 cd camera\ streaming/iceoryx2-publisher/cpp
-mkdir build && cd build
+mkdir -p build
+cd build
 cmake ..
-make
+make -j
 ```
 
-The executable will be `ZED_IceoryX2_Camera_Publisher`
+The executable will be `ZED_IceoryX2_Camera_Publisher`.
 
 ## Usage
+
+### Basic
 
 ```bash
 ./ZED_IceoryX2_Camera_Publisher
 ```
 
-The service will:
-1. Detect all connected ZED cameras
-2. Print camera information (model, serial number)
-3. Create iceoryx2 publishers for each camera's left and right images
-4. Continuously capture and publish frames
-5. Print statistics every 100 frames
+### Common Options
 
-To stop, press `Ctrl+C`.
+```bash
+./ZED_IceoryX2_Camera_Publisher \
+  --camera-resolution HD1080 \
+  --camera-fps 30 \
+  --publish-resolution 1280x720 \
+  --camera-serials 12345678,87654321 \
+  --service-prefix cams \
+  --max-subscribers 16
+```
 
-## Subscriber Example
+### Publish Unrectified Views
 
-To consume frames from this publisher using iceoryx2, see the `zed-opencv` repository for a C++ subscriber example that demonstrates:
-- Subscribing to the published topics
-- Receiving frame data from shared memory
-- Processing frames with OpenCV
+```bash
+./ZED_IceoryX2_Camera_Publisher --unrectified
+```
+
+### Help
+
+```bash
+./ZED_IceoryX2_Camera_Publisher --help
+```
+
+### List Available Cameras
+
+```bash
+./ZED_IceoryX2_Camera_Publisher --list-cameras
+```
+
+This prints the detected device index, serial number, model, path, video device, badge/sensor metadata, and best-effort opened camera information such as firmware, active resolution, and FPS.
+
+### Stream Only Selected Cameras
+
+```bash
+./ZED_IceoryX2_Camera_Publisher --camera-indices 0,2
+```
+
+or
+
+```bash
+./ZED_IceoryX2_Camera_Publisher --camera-serials 12345678,87654321
+```
+
+### Query Runtime Camera Settings Over IPC
+
+With the streamer already running:
+
+```bash
+./ZED_IceoryX2_Camera_Publisher \
+  --camera-target serial:12345678 \
+  --list-settings
+```
+
+```bash
+./ZED_IceoryX2_Camera_Publisher \
+  --camera-target serial:12345678 \
+  --get-setting exposure
+```
+
+### Change Runtime Camera Settings Over IPC
+
+```bash
+./ZED_IceoryX2_Camera_Publisher \
+  --camera-target serial:12345678 \
+  --set-setting exposure=42
+```
+
+```bash
+./ZED_IceoryX2_Camera_Publisher \
+  --camera-target serial:12345678 \
+  --set-setting-range auto_exposure_time_range=2000:5000
+```
+
+```bash
+./ZED_IceoryX2_Camera_Publisher \
+  --camera-target serial:12345678 \
+  --reset-settings
+```
+
+Supported runtime settings intentionally exclude image-geometry changes such as acquisition resolution, publish scaling, and cropping.
+
+### Read Calibration Over IPC
+
+```bash
+./ZED_IceoryX2_Camera_Publisher --list-calibrations
+```
+
+```bash
+./ZED_IceoryX2_Camera_Publisher --read-calibration 12345678
+```
+
+Calibration snapshots are keyed by camera serial on the `cams/calibration` blackboard and include:
+- Active published resolution
+- Whether the stream is rectified or unrectified
+- Rectified and raw left/right intrinsics
+- Stereo transform and baseline
+- Firmware metadata
 
 ## Notes
 
-- Frame resolution follows the camera's auto-detection setting
-- FPS is set to 30 by default (configurable in InitParameters)
-- Only RGBA format is supported (4 bytes per pixel)
-- History size is set to 1 (only latest frame retained)
-- All timestamps are synchronized with the camera hardware clock
+- The publisher uses `sl::RuntimeParameters` during `grab(...)`.
+- Image transport is dynamic: the shared-memory loan matches the actual frame byte count.
+- The published byte layout is whatever `sl::Mat` exposes for the selected ZED view and output resolution.
+- For `VIEW::LEFT` and `VIEW::RIGHT`, ZED returns BGRA data by default.
+- History defaults to `1` and safe overflow is enabled for the service.
+- Publisher allocation uses the `iceoryx2` power-of-two growth strategy.
+- Calibration snapshots are generated with `getCameraInformation(requested_resolution)`, so they already follow the effective published resolution.
+- Cropping is not part of the runtime IPC controls; if added later, principal point / intrinsics adjustments should be applied in this publisher before updating the blackboard snapshot.
+
+## Subscriber Expectations
+
+A subscriber should:
+- Open the same `iceoryx2` service name
+- Expect payload type `Slice<uint8_t>`
+- Expect user header type `FrameHeader`
+- Interpret payload bytes using `FrameHeader.width`, `height`, `step_bytes`, `channels`, and `mat_type`
 
 ## Troubleshooting
 
 ### No cameras detected
 - Check USB connections
-- Verify cameras are recognized by `lsusb`
-- Check camera permissions
+- Verify camera permissions
+- Confirm the ZED SDK tools can see the cameras
 
 ### Publisher creation fails
-- Ensure iceoryx2 middleware is properly installed
-- Check iceoryx2 service configuration
-- Verify sufficient shared memory is available
+- Ensure the `iceoryx2-cxx` package is installed and discoverable by CMake
+- Check shared-memory limits and `iceoryx2` configuration
+- Make sure service names are valid semantic strings
 
-### Frame publishing issues
-- Check that subscribers aren't holding locks
-- Monitor CPU usage for frame drop indicators
-- Verify image dimensions don't exceed 4K resolution
+### Subscribers misread image data
+- Confirm the subscriber matches the `FrameHeader` layout exactly
+- Use `step_bytes` instead of assuming tightly packed rows
+- Check whether the publisher is using rectified or unrectified views
