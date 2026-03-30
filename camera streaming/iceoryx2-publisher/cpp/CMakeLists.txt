@@ -23,6 +23,7 @@ find_package(CUDA ${ZED_CUDA_VERSION} REQUIRED)
 find_package(iceoryx2-cxx REQUIRED)
 
 add_executable(${PROJECT_NAME}
+    src/camera_instance_service.cpp
     src/main.cpp
 )
 

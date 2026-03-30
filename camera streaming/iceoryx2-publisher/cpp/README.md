@@ -8,6 +8,7 @@ The publisher:
 - Detects all connected ZED cameras
 - Can list available ZED cameras with detailed device metadata
 - Can restrict streaming to a selected subset of cameras by serial or index
+- Avoids opening or probing filtered-out cameras during streaming
 - Opens one left and one right image publisher per camera
 - Uses the `iceoryx2` C++ API with RAII objects instead of raw C handles
 - Publishes image bytes as a dynamic `Slice<uint8_t>` payload
@@ -21,18 +22,24 @@ The publisher:
 Services are namespaced by camera index:
 - `cams/zed1/left`
 - `cams/zed1/right`
+- `cams/zed1/control`
+- `cams/zed1/calibration`
 - `cams/zed2/left`
 - `cams/zed2/right`
+- `cams/zed2/control`
+- `cams/zed2/calibration`
 
 You can change the `cams` prefix with `--service-prefix`.
 
-Additional IPC services:
-- Control service: `cams/control`
-- Calibration blackboard: `cams/calibration`
+Aggregate IPC services:
+- Fleet control service: `cams/control`
+- Fleet calibration blackboard: `cams/calibration`
 
 Why these protocols:
 - `request/response` is used for camera settings because callers need explicit success/error feedback and read-after-write responses.
 - `blackboard` is used for calibration because it represents the latest state per stereo pair and should be readable at any time without replaying a stream.
+- Per-camera control and calibration paths keep each camera instance self-contained.
+- Aggregate services provide fleet-wide access and can fan out across instance services.
 
 ## Wire Format
 
@@ -93,9 +100,8 @@ The executable will be `ZED_IceoryX2_Camera_Publisher`.
 
 ```bash
 ./ZED_IceoryX2_Camera_Publisher \
-  --camera-resolution HD1080 \
+  --camera-resolution HD720 \
   --camera-fps 30 \
-  --publish-resolution 1280x720 \
   --camera-serials 12345678,87654321 \
   --service-prefix cams \
   --max-subscribers 16
@@ -131,6 +137,14 @@ or
 
 ```bash
 ./ZED_IceoryX2_Camera_Publisher --camera-serials 12345678,87654321
+```
+
+When either selector is provided, the streamer still performs device discovery so it can map serials and indices, but it only opens and starts the matched cameras.
+
+You can also target a single stream camera with:
+
+```bash
+./ZED_IceoryX2_Camera_Publisher --camera-target serial:12345678
 ```
 
 ### Query Runtime Camera Settings Over IPC
@@ -188,6 +202,15 @@ Calibration snapshots are keyed by camera serial on the `cams/calibration` black
 - Stereo transform and baseline
 - Firmware metadata
 
+When a single camera is targeted, the CLI resolves and uses that camera's direct service namespace:
+- Control: `cams/zedN/control`
+- Calibration: `cams/zedN/calibration`
+
+The aggregate services remain available for fleet-wide operations such as:
+- `--camera-target all --list-settings`
+- `--camera-target all --reset-settings`
+- `--list-calibrations`
+
 ## Notes
 
 - The publisher uses `sl::RuntimeParameters` during `grab(...)`.
@@ -198,6 +221,7 @@ Calibration snapshots are keyed by camera serial on the `cams/calibration` black
 - Publisher allocation uses the `iceoryx2` power-of-two growth strategy.
 - Calibration snapshots are generated with `getCameraInformation(requested_resolution)`, so they already follow the effective published resolution.
 - Cropping is not part of the runtime IPC controls; if added later, principal point / intrinsics adjustments should be applied in this publisher before updating the blackboard snapshot.
+- Default acquisition mode is `HD720` at `30 FPS`.
 
 ## Subscriber Expectations
 
